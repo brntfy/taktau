@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>FrameFinder — Retro Finger Tracker Cam</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<style>
+  :root{
+    --bg:#000;
+    --hud-yellow:#ffd23f;
+    --hud-white:#f2f2f2;
+    --hud-red:#ff3b30;
+    --hud-cyan:#7fe8ff;
+    --hud-dim:rgba(255,255,255,0.55);
+    --font-mono: "Courier New", Courier, monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){ --bg:#000; }
+  }
+  :root[data-theme="dark"]{ --bg:#000; }
+
+  *{ box-sizing:border-box; }
+  html,body{
+    margin:0; padding:0; width:100%; height:100%;
+    background:var(--bg); overflow:hidden;
+    font-family:var(--font-mono);
+    -webkit-user-select:none; user-select:none;
+  }
+
+  #stage{
+    position:relative;
+    width:100vw; height:100vh;
+    background:#000;
+    overflow:hidden;
+  }
+
+  video{
+    position:absolute; inset:0;
+    width:100%; height:100%;
+    object-fit:cover;
+    transform:scaleX(-1);
+    filter:grayscale(1) contrast(1.15) brightness(1.02);
+    display:block;
+  }
+
+  canvas#overlay{
+    position:absolute; inset:0;
+    width:100%; height:100%;
+    pointer-events:none;
+  }
+
+  /* scanline / grain vignette for that camcorder feel */
+  #vignette{
+    position:absolute; inset:0;
+    pointer-events:none;
+    background:
+      radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,0,0.55) 100%);
+  }
+  #scanlines{
+    position:absolute; inset:0;
+    pointer-events:none;
+    opacity:0.12;
+    background:repeating-linear-gradient(
+      0deg, rgba(255,255,255,0.6) 0px, rgba(255,255,255,0.6) 1px,
+      transparent 1px, transparent 3px
+    );
+    mix-blend-mode:overlay;
+  }
+
+  .hud{
+    position:absolute;
+    color:var(--hud-white);
+    font-size:clamp(11px, 2.6vw, 15px);
+    letter-spacing:0.5px;
+    text-shadow:0 0 4px rgba(0,0,0,0.9), 0 0 1px rgba(0,0,0,1);
+    z-index:5;
+  }
+
+  #rec{
+    top:14px; left:14px;
+    display:flex; align-items:center; gap:8px;
+    color:var(--hud-red);
+    font-weight:bold;
+  }
+  #rec .dot{
+    width:9px; height:9px; border-radius:50%;
+    background:var(--hud-red);
+    box-shadow:0 0 6px var(--hud-red);
+    animation:blink 1s steps(2,start) infinite;
+  }
+  @keyframes blink{ 50%{ opacity:0.15; } }
+
+  #datetime{
+    top:14px; right:14px; text-align:right;
+    color:var(--hud-white);
+  }
+
+  #modeinfo{
+    top:44px; left:14px;
+    color:var(--hud-cyan);
+    font-size:clamp(10px,2.2vw,13px);
+  }
+
+  #orient{
+    top:44px; right:14px; text-align:right;
+    color:var(--hud-yellow);
+    font-size:clamp(10px,2.2vw,13px);
+  }
+
+  #crosshair{
+    top:50%; left:50%;
+    transform:translate(-50%,-50%);
+    width:22px; height:22px;
+  }
+  #crosshair svg{ width:100%; height:100%; opacity:0.55; }
+
+  #bottombar{
+    left:0; right:0; bottom:14px;
+    display:flex; justify-content:center;
+    color:var(--hud-white);
+    font-size:clamp(10px,2.4vw,14px);
+    letter-spacing:1px;
+  }
+  #bottombar span{ opacity:0.9; }
+  #bottombar .sep{ margin:0 10px; opacity:0.4; }
+
+  #framebox{
+    top:70px; left:14px;
+    color:var(--hud-dim);
+    font-size:clamp(9px,2vw,12px);
+  }
+
+  #status{
+    position:absolute; left:50%; top:50%;
+    transform:translate(-50%,-50%);
+    color:var(--hud-white);
+    font-size:14px;
+    text-align:center;
+    z-index:10;
+    max-width:80%;
+    line-height:1.5;
+  }
+  #status button{
+    margin-top:14px;
+    background:var(--hud-yellow);
+    color:#000;
+    border:none;
+    padding:10px 18px;
+    font-family:var(--font-mono);
+    font-weight:bold;
+    border-radius:6px;
+    font-size:13px;
+  }
+
+  #shutterFlash{
+    position:absolute; inset:0;
+    background:#fff;
+    opacity:0;
+    pointer-events:none;
+    z-index:20;
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="overlay"></canvas>
+  <div id="vignette"></div>
+  <div id="scanlines"></div>
+
+  <div class="hud" id="rec"><span class="dot"></span>REC</div>
+  <div class="hud" id="datetime">--.--.---- --:--:--</div>
+  <div class="hud" id="modeinfo">MONO • --x--</div>
+  <div class="hud" id="orient">ROLL 0° PITCH 0° YAW 0°</div>
+  <div class="hud" id="framebox"></div>
+
+  <div class="hud" id="crosshair">
+    <svg viewBox="0 0 24 24" fill="none" stroke="var(--hud-white)" stroke-width="1">
+      <line x1="12" y1="2" x2="12" y2="8"/>
+      <line x1="12" y1="16" x2="12" y2="22"/>
+      <line x1="2" y1="12" x2="8" y2="12"/>
+      <line x1="16" y1="12" x2="22" y2="12"/>
+      <circle cx="12" cy="12" r="1.4" fill="var(--hud-white)"/>
+    </svg>
+  </div>
+
+  <div class="hud" id="bottombar">
+    <span id="lensLabel">LENS · WIDE</span><span class="sep">|</span>
+    <span id="modeLabel">MONO</span><span class="sep">|</span>
+    <span id="fpsLabel">FPS 0</span><span class="sep">|</span>
+    <span id="frameLabel">FRAME 0</span>
+  </div>
+
+  <div id="status">
+    Point the camera at your hands.<br/>Tap start to enable the camera.
+    <br/><button id="startBtn">▶ START CAMERA</button>
+  </div>
+
+  <div id="shutterFlash"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script>
+(function(){
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('overlay');
+  const ctx = canvas.getContext('2d');
+  const statusEl = document.getElementById('status');
+  const startBtn = document.getElementById('startBtn');
+  const datetimeEl = document.getElementById('datetime');
+  const modeinfoEl = document.getElementById('modeinfo');
+  const orientEl = document.getElementById('orient');
+  const fpsLabel = document.getElementById('fpsLabel');
+  const frameLabel = document.getElementById('frameLabel');
+  const framebox = document.getElementById('framebox');
+  const flash = document.getElementById('shutterFlash');
+
+  let frameCount = 0;
+  let lastFrameTime = performance.now();
+  let fps = 0;
+  let camera = null;
+  let handsModel = null;
+
+  function resizeCanvas(){
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    modeinfoEl.textContent = 'MONO • ' + canvas.width + 'x' + canvas.height;
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  function pad(n){ return n.toString().padStart(2,'0'); }
+  function tickClock(){
+    const d = new Date();
+    const dateStr = pad(d.getDate())+'.'+pad(d.getMonth()+1)+'.'+d.getFullYear();
+    const timeStr = pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds());
+    datetimeEl.textContent = dateStr + ' ' + timeStr;
+  }
+  setInterval(tickClock, 1000);
+  tickClock();
+
+  // Mirror an x coordinate because the video is flipped with scaleX(-1)
+  function mirrorX(xNorm){ return (1 - xNorm); }
+
+  function toPixel(lm){
+    return {
+      x: mirrorX(lm.x) * canvas.width,
+      y: lm.y * canvas.height
+    };
+  }
+
+  function dist(a,b){
+    return Math.hypot(a.x-b.x, a.y-b.y);
+  }
+
+  function drawNode(p, color, r){
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI*2);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 2.5, 0, Math.PI*2);
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  function drawLine(a,b,color,width){
+    ctx.beginPath();
+    ctx.moveTo(a.x,a.y);
+    ctx.lineTo(b.x,b.y);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width || 1.4;
+    ctx.setLineDash([]);
+    ctx.stroke();
+  }
+
+  function drawLabel(text, x, y, color){
+    ctx.font = '11px Courier New, monospace';
+    ctx.fillStyle = color;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x, y);
+  }
+
+  // Draw a frame formed by thumb-tip + index-tip of each hand (viewfinder gesture)
+  function drawFrameFromHands(handList){
+    if (handList.length < 1) { framebox.textContent=''; return; }
+
+    // gather thumb tip (4) and index tip (8) for up to 2 hands
+    const corners = [];
+    handList.forEach(lms => {
+      corners.push(toPixel(lms[4]));  // thumb tip
+      corners.push(toPixel(lms[8]));  // index tip
+    });
+
+    if (corners.length >= 2){
+      // bounding box of the corner points = the "frame"
+      const xs = corners.map(c=>c.x);
+      const ys = corners.map(c=>c.y);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const minY = Math.min(...ys), maxY = Math.max(...ys);
+
+      ctx.setLineDash([6,5]);
+      ctx.strokeStyle = 'rgba(255,210,63,0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(minX, minY, maxX-minX, maxY-minY);
+      ctx.setLineDash([]);
+
+      // corner brackets
+      const L = 14;
+      ctx.strokeStyle = 'var(--hud-yellow)'.includes('var') ? '#ffd23f' : '#ffd23f';
+      ctx.lineWidth = 2.4;
+      const corners4 = [[minX,minY,1,1],[maxX,minY,-1,1],[minX,maxY,1,-1],[maxX,maxY,-1,-1]];
+      corners4.forEach(([cx,cy,dx,dy])=>{
+        ctx.beginPath();
+        ctx.moveTo(cx, cy + L*dy);
+        ctx.lineTo(cx, cy);
+        ctx.lineTo(cx + L*dx, cy);
+        ctx.stroke();
+      });
+
+      drawLabel('MONO ' + Math.round(maxX-minX) + 'x' + Math.round(maxY-minY), minX+4, minY-10, '#ffd23f');
+      framebox.textContent = 'GESTURE FRAME ' + Math.round(maxX-minX) + 'x' + Math.round(maxY-minY);
+    }
+
+    // connect the corner points to each other for the "viewfinder" look
+    for (let i=0;i<corners.length;i++){
+      drawNode(corners[i], '#ffd23f', 7);
+    }
+    if (corners.length === 4){
+      drawLine(corners[0], corners[2], 'rgba(127,232,255,0.7)', 1);
+      drawLine(corners[1], corners[3], 'rgba(127,232,255,0.7)', 1);
+    }
+  }
+
+  const FINGER_CHAINS = [
+    [0,1,2,3,4],
+    [0,5,6,7,8],
+    [0,9,10,11,12],
+    [0,13,14,15,16],
+    [0,17,18,19,20],
+    [5,9,13,17]
+  ];
+
+  function drawSkeleton(lms){
+    const pts = lms.map(toPixel);
+    FINGER_CHAINS.forEach(chain=>{
+      for (let i=0;i<chain.length-1;i++){
+        drawLine(pts[chain[i]], pts[chain[i+1]], 'rgba(255,255,255,0.35)', 1);
+      }
+    });
+    pts.forEach((p,i)=>{
+      const isTip = [4,8,12,16,20].includes(i);
+      if (isTip){
+        drawNode(p, '#ffd23f', 6);
+      } else {
+        ctx.beginPath();
+        ctx.arc(p.x,p.y,1.6,0,Math.PI*2);
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        ctx.fill();
+      }
+    });
+  }
+
+  // crude pseudo roll/pitch/yaw derived from wrist -> middle-finger-MCP vector
+  function estimateOrientation(lms){
+    const wrist = toPixel(lms[0]);
+    const midMcp = toPixel(lms[9]);
+    const indexMcp = toPixel(lms[5]);
+    const pinkyMcp = toPixel(lms[17]);
+
+    const roll = Math.atan2(midMcp.y - wrist.y, midMcp.x - wrist.x) * (180/Math.PI);
+    const spread = dist(indexMcp, pinkyMcp);
+    const depth = dist(wrist, midMcp);
+    const pitch = Math.max(-90, Math.min(90, (depth - 120) * 0.4));
+    const yaw = Math.max(-90, Math.min(90, (indexMcp.x - pinkyMcp.x) * 0.15));
+
+    return { roll: roll.toFixed(0), pitch: pitch.toFixed(0), yaw: yaw.toFixed(0) };
+  }
+
+  function onResults(results){
+    ctx.clearRect(0,0,canvas.width, canvas.height);
+
+    const now = performance.now();
+    frameCount++;
+    if (now - lastFrameTime > 500){
+      fps = Math.round((frameCount * 1000) / (now - lastFrameTime));
+      frameCount = 0;
+      lastFrameTime = now;
+      fpsLabel.textContent = 'FPS ' + fps;
+    }
+
+    const handList = results.multiHandLandmarks || [];
+
+    if (handList.length){
+      handList.forEach(lms => drawSkeleton(lms));
+      drawFrameFromHands(handList);
+      const o = estimateOrientation(handList[0]);
+      orientEl.textContent = `ROLL ${o.roll}° PITCH ${o.pitch}° YAW ${o.yaw}°`;
+    } else {
+      orientEl.textContent = 'ROLL --° PITCH --° YAW --°';
+      framebox.textContent = '';
+    }
+  }
+
+  async function start(){
+    statusEl.innerHTML = 'Requesting camera access…';
+    try{
+      handsModel = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+      });
+      handsModel.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.6,
+        minTrackingConfidence: 0.6
+      });
+      handsModel.onResults(onResults);
+
+      camera = new Camera(video, {
+        onFrame: async () => {
+          try{ await handsModel.send({image: video}); }
+          catch(e){ /* frame errors are non-fatal */ }
+        },
+        width: 1280,
+        height: 720
+      });
+
+      await camera.start();
+      statusEl.style.display = 'none';
+
+      // quick shutter flash + frame counter tick, mimicking a "photo" moment
+      let photoCount = 0;
+      canvas.addEventListener('click', () => {
+        photoCount++;
+        frameLabel.textContent = 'FRAME ' + photoCount;
+        flash.style.transition = 'none';
+        flash.style.opacity = '0.9';
+        requestAnimationFrame(()=>{
+          flash.style.transition = 'opacity 300ms ease';
+          flash.style.opacity = '0';
+        });
+      });
+
+    } catch(err){
+      statusEl.style.display = 'block';
+      statusEl.innerHTML = 'Could not access the camera.<br/>' +
+        (err && err.message ? err.message : 'Permission denied or unsupported browser.') +
+        '<br/><button id="retryBtn">↻ RETRY</button>';
+      const retryBtn = document.getElementById('retryBtn');
+      if (retryBtn) retryBtn.addEventListener('click', start);
+    }
+  }
+
+  startBtn.addEventListener('click', start);
+})();
+</script>
+</body>
+</html>
